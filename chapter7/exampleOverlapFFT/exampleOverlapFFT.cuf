@@ -1,0 +1,164 @@
+! 
+!     Copyright (c) 2017, NVIDIA CORPORATION.  All rights reserved.
+!
+! NVIDIA CORPORATION and its licensors retain all intellectual property
+! and proprietary rights in and to this software, related documentation
+! and any modifications thereto.
+!
+!
+!    These example codes are a portion of the code samples from the companion
+!    website to the book "CUDA Fortran for Scientists and Engineers":
+!
+! http://store.elsevier.com/product.jsp?isbn=9780124169708
+!
+
+program fftOverlap
+use cudafor
+use precision_m
+use cufft_m
+implicit none
+
+complex(fp_kind), allocatable,dimension(:,:,:),pinned :: A,B,C
+complex(fp_kind), allocatable,dimension(:,:,:),device :: A_d,B_d
+integer, parameter :: num_streams=4
+integer:: nx, ny, nomega, ifr, i,j, stream_index
+integer:: clock_start,clock_end,clock_rate, istat
+integer(kind=cuda_stream_kind) :: stream(num_streams)
+type(c_ptr):: plan
+real:: elapsed_time
+real(fp_kind):: scale
+
+nx=512; ny=512;  nomega=196
+scale=1./real(nx*ny,fp_kind)
+
+! Initialize FFT plan
+ call cufftPlan2d(plan,nx,ny,CUFFT_C2C)
+
+! Create streams
+  do i = 1,num_streams
+    istat= cudaStreamCreate(stream(i))
+  end do
+
+  call SYSTEM_CLOCK(COUNT_RATE=clock_rate) ! Find the rate
+
+! Allocate arrays on CPU and GPU
+  allocate(A(nx,ny,nomega),B(nx,ny,nomega),C(nx,ny,nomega))
+  allocate(A_d(nx,ny,num_streams),B_d(nx,ny,num_streams))
+
+! Initialize arrays on CPU
+  A=cmplx(1.,1.,fp_kind); B=cmplx(1.,1.,fp_kind); C=cmplx(0.,0.,fp_kind)
+
+! Measure only the transfer time
+  istat=cudaThreadSynchronize()
+
+  print *,"I/O only"
+  call SYSTEM_CLOCK(COUNT=clock_start) ! Start timing
+
+  do ifr=1,nomega
+   istat= cudaMemcpy(A_d(1,1,1),A(1,1,ifr),nx*ny)
+   istat= cudaMemcpy(B_d(1,1,1),B(1,1,ifr),nx*ny)
+   istat= cudaMemcpy(C(1,1,ifr),A_d(1,1,1),nx*ny)
+  end do
+
+  istat=cudaThreadSynchronize()
+  call SYSTEM_CLOCK(COUNT=clock_end) ! End timing
+  elapsed_time=REAL(clock_end-clock_start)/REAL(clock_rate)
+  print *,"Elapsed time :",elapsed_time
+
+! Measure the transfer time H2D, FFT , IFFT and transfer time D2H
+
+print '(/a)',"Single stream  loop"
+istat=cudaThreadSynchronize()
+call SYSTEM_CLOCK(COUNT=clock_start) ! Start timing
+stream_index = 1
+call cufftSetStream(plan,stream(stream_index))
+do ifr=1,nomega
+ istat= cudaMemcpy(A_d(1,1,stream_index),A(1,1,ifr),nx*ny)
+ istat= cudaMemcpy(B_d(1,1,stream_index),B(1,1,ifr),nx*ny)
+  call cufftExecC2C(plan ,A_d(1,1,stream_index),&
+                          A_d(1,1,stream_index),CUFFT_FORWARD)
+  call cufftExecC2C(plan ,B_d(1,1,stream_index),&
+                          B_d(1,1,stream_index),CUFFT_FORWARD)
+
+  ! Convolution and scaling of the  arrays
+  !$cuf kernel do(2) <<<*,(16,16),stream=stream(stream_index)>>>
+    do j=1,ny
+      do i=1,nx
+        B_d(i,j,stream_index)= A_d(i,j,stream_index)*&
+                               B_d(i,j,stream_index)*scale
+      end do
+    end do
+
+  call cufftExecC2C(plan ,B_d(1,1,stream_index),&
+                          B_d(1,1,stream_index),CUFFT_INVERSE)
+  istat=cudaMemcpy( C(1,1,ifr),B_d(1,1,stream_index),nx*ny)
+end do
+
+istat=cudaThreadSynchronize()
+call SYSTEM_CLOCK(COUNT=clock_end) ! End timing
+elapsed_time=REAL(clock_end-clock_start)/REAL(clock_rate)
+print *,"Elapsed time :",elapsed_time
+
+! Overlap I/O and compute using multiple streams and async copies
+print '(/a)',"Do loop with multiple streams"
+call SYSTEM_CLOCK(COUNT=clock_start) ! Start timing
+
+do ifr=1,nomega
+
+! assign a stream for the current plan
+stream_index = mod(ifr,num_streams)+1
+
+! Set the stream used by CUFFT
+  call cufftSetStream(plan,stream(stream_index))
+
+! Send A to GPU
+ istat= cudaMemcpyAsync(A_d(1,1,stream_index),A(1,1,ifr),&
+                        nx*ny, stream(stream_index))
+
+! Execute forward FFTs on GPU
+  call cufftExecC2C(plan ,A_d(1,1,stream_index),&
+                          A_d(1,1,stream_index),CUFFT_FORWARD)
+
+! Send B to GPU
+ istat= cudaMemcpyAsync(B_d(1,1,stream_index), &
+                        B(1,1,ifr),nx*ny, stream(stream_index))
+
+! Execute forward FFTs on GPU
+  call cufftExecC2C(plan ,B_d(1,1,stream_index),&
+                          B_d(1,1,stream_index),CUFFT_FORWARD)
+
+! Convolution and scaling of the  arrays
+ !$cuf kernel do(2) <<<*,(16,16),stream=stream(stream_index)>>>
+    do j=1,ny
+      do i=1,nx
+        B_d(i,j,stream_index)= A_d(i,j,stream_index)* &
+                               B_d(i,j,stream_index)*scale
+      end do
+    end do
+
+! Execute inverse FFTs on GPU
+     call cufftExecC2C(plan ,B_d(1,1,stream_index), &
+                             B_d(1,1,stream_index),CUFFT_INVERSE)
+
+! Copy results back
+  istat=cudaMemcpyAsync( C(1,1,ifr),B_d(1,1,stream_index), &
+                         nx*ny, stream=stream(stream_index))
+
+end do
+
+istat=cudaThreadSynchronize()
+call SYSTEM_CLOCK(COUNT=clock_end) ! Start timing
+elapsed_time=REAL(clock_end-clock_start)/REAL(clock_rate)
+print *,"Elapsed time :",elapsed_time
+
+if (istat .eq. 0) then
+   print *,"Test Passed"
+else
+   print *,"Test Failed"
+endif
+
+deallocate(A,B,C); deallocate(A_d,B_d)
+call cufftDestroy(plan)
+
+end program fftOverlap
+

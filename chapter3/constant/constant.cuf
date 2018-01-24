@@ -1,0 +1,50 @@
+! 
+!     Copyright (c) 2017, NVIDIA CORPORATION.  All rights reserved.
+!
+! NVIDIA CORPORATION and its licensors retain all intellectual property
+! and proprietary rights in and to this software, related documentation
+! and any modifications thereto.
+!
+!
+!    These example codes are a portion of the code samples from the companion
+!    website to the book "CUDA Fortran for Scientists and Engineers":
+!
+! http://store.elsevier.com/product.jsp?isbn=9780124169708
+!
+
+module simpleOps_m
+  integer, constant :: b
+contains
+  attributes(global) subroutine increment(a)
+    implicit none
+    integer, intent(inout) :: a(:)
+    integer :: i
+
+    i = threadIdx%x
+    a(i) = a(i)+b
+
+  end subroutine increment
+end module simpleOps_m
+
+
+program incrementTest  
+  use cudafor
+  use simpleOps_m
+  implicit none
+  integer, parameter :: n = 256
+  integer :: a(n)
+  integer, device :: a_d(n)
+
+  a = 1
+  b = 3
+
+  a_d = a
+  call increment<<<1,n>>>(a_d)
+  a = a_d
+
+  if (any(a /= 4)) then
+     write(*,*) '**** Program Failed ****'
+  else
+     write(*,*) 'Program Passed'
+  endif
+end program incrementTest

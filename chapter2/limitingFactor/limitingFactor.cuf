@@ -1,0 +1,69 @@
+! 
+!     Copyright (c) 2017, NVIDIA CORPORATION.  All rights reserved.
+!
+! NVIDIA CORPORATION and its licensors retain all intellectual property
+! and proprietary rights in and to this software, related documentation
+! and any modifications thereto.
+!
+!
+!    These example codes are a portion of the code samples from the companion
+!    website to the book "CUDA Fortran for Scientists and Engineers":
+!
+! http://store.elsevier.com/product.jsp?isbn=9780124169708
+!
+
+module kernel_m
+contains
+  attributes(global) subroutine base(a, b)
+    real :: a(*), b(*)
+    integer :: i    
+    i = (blockIdx%x-1)*blockDim%x + threadIdx%x
+    a(i) = sin(b(i))
+  end subroutine base
+
+  attributes(global) subroutine memory(a, b)
+    real :: a(*), b(*)
+    integer :: i    
+    i = (blockIdx%x-1)*blockDim%x + threadIdx%x
+    a(i) = b(i)
+  end subroutine memory
+
+  attributes(global) subroutine math(a, b, flag)
+    real :: a(*)
+    real, value :: b
+    integer, value :: flag
+    real :: v
+    integer :: i    
+    i = (blockIdx%x-1)*blockDim%x + threadIdx%x
+    v = sin(b)
+    if (v*flag == 1) a(i) = v
+  end subroutine math
+end module kernel_m
+
+program limitingFactor
+  use cudafor
+  use kernel_m
+  
+  implicit none
+  
+  integer, parameter :: n=8*1024*1024, blockSize = 256
+  real :: a(n)
+  real, device :: a_d(n), b_d(n)
+  integer :: i, nerrors
+  b_d = 1.0
+  call base<<<n/blockSize,blockSize>>>(a_d, b_d)
+  call memory<<<n/blockSize,blockSize>>>(a_d, b_d)
+  call math<<<n/blockSize,blockSize>>>(a_d, 1.0, 0)
+  a = a_d
+  nerrors = 0
+  do i = 1, n
+    if (a(1) .ne. 1.0) then
+      nerrors = nerrors + 1
+    endif
+  enddo
+  if (nerrors .ne. 0) then
+    print *, "Test Failed"
+  else
+    print *, "Test Passed"
+  endif
+end program limitingFactor

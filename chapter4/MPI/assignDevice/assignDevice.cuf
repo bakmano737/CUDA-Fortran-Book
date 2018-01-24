@@ -1,0 +1,79 @@
+! 
+!     Copyright (c) 2017, NVIDIA CORPORATION.  All rights reserved.
+!
+! NVIDIA CORPORATION and its licensors retain all intellectual property
+! and proprietary rights in and to this software, related documentation
+! and any modifications thereto.
+!
+!
+!    These example codes are a portion of the code samples from the companion
+!    website to the book "CUDA Fortran for Scientists and Engineers":
+!
+! http://store.elsevier.com/product.jsp?isbn=9780124169708
+!
+
+program main
+  use mpi
+  use mpiDeviceUtil
+  use cudafor
+  implicit none
+
+  ! global array size
+  integer, parameter :: n = 1024*1024
+  ! mpi 
+  character (len=MPI_MAX_PROCESSOR_NAME) :: hostname
+  integer :: myrank, nprocs, ierr, namelength
+  ! device 
+  type(cudaDeviceProp) :: prop
+  integer(int_ptr_kind()) :: freeB, totalB, freeA, totalA 
+  real, device, allocatable :: d(:)
+  integer :: deviceID, i, istat
+
+  call MPI_INIT(ierr)
+  call MPI_COMM_RANK(MPI_COMM_WORLD, myrank, ierr)
+  call MPI_COMM_SIZE(MPI_COMM_WORLD, nProcs, ierr)
+
+  ! get and set unique device 
+  call assignDevice(deviceID)
+
+  ! print hostname and device ID for each rank
+  call MPI_GET_PROCESSOR_NAME(hostname, namelength, ierr)
+  do i = 0, nProcs-1
+     call MPI_BARRIER(MPI_COMM_WORLD, ierr)
+     if (i == myrank) &
+          write(*,"('[',i0,'] host: ', a, ',  device: ', i0)") &
+          myrank, trim(hostname), deviceID
+  enddo
+
+  ! get memory use before large allocations, 
+  call MPI_BARRIER(MPI_COMM_WORLD, ierr)
+  istat = cudaMemGetInfo(freeB, totalB)
+
+  ! allocate memory on each device
+  call MPI_BARRIER(MPI_COMM_WORLD, ierr)
+  allocate(d(n)) 
+
+  ! Get free memory after allocation
+  call MPI_BARRIER(MPI_COMM_WORLD, ierr)
+  istat = cudaMemGetInfo(freeA, totalA)
+
+  do i = 0, nProcs-1
+     call MPI_BARRIER(MPI_COMM_WORLD, ierr)
+     if (i == myrank) &
+          write(*,"('  [', i0, '] ', & 
+          'device arrays allocated: ', i0)") &
+          myrank, (freeB-freeA)/n/4    
+  end do
+
+  deallocate(d)
+
+  if (istat .ne. 0) then
+     write(*,*) "Test Failed"
+  else
+     write(*,*) "Test Passed"
+  endif
+
+  call MPI_FINALIZE(ierr)  
+end program main
+
+

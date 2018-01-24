@@ -1,0 +1,179 @@
+! 
+!     Copyright (c) 2017, NVIDIA CORPORATION.  All rights reserved.
+!
+! NVIDIA CORPORATION and its licensors retain all intellectual property
+! and proprietary rights in and to this software, related documentation
+! and any modifications thereto.
+!
+!
+!    These example codes are a portion of the code samples from the companion
+!    website to the book "CUDA Fortran for Scientists and Engineers":
+!
+! http://store.elsevier.com/product.jsp?isbn=9780124169708
+!
+
+! This code demonstrates use of thread- and instruction-
+! level parallelism and their effect on performance
+
+module copy_m
+  integer, parameter :: N = 1024*1024
+  integer, parameter :: ILP=4
+contains
+
+  ! simple copy code that requires thread-level paralellism
+  ! to hide global memory latencies
+
+  attributes(global) subroutine copy(odata, idata)
+    use precision_m
+    implicit none
+    real(fp_kind) :: odata(*), idata(*), tmp
+    integer :: i
+    
+    i = (blockIdx%x-1)*blockDim%x + threadIdx%x
+    tmp = idata(i)
+    odata(i) = tmp
+  end subroutine copy
+
+  ! copy code which uses instruction-level parallelism 
+  ! in addition to thread-level parallelism to hide
+  ! global memory latencies
+
+  attributes(global) subroutine copy_ILP(odata, idata)
+    use precision_m
+    implicit none
+    real(fp_kind) :: odata(*), idata(*), tmp(ILP)
+    integer :: i,j
+    
+    i = (blockIdx%x-1)*blockDim%x*ILP + threadIdx%x
+
+    do j = 1, ILP
+       tmp(j) = idata(i+(j-1)*blockDim%x)
+    enddo
+
+    do j = 1, ILP
+       odata(i+(j-1)*blockDim%x) = tmp(j)
+    enddo
+  end subroutine copy_ILP
+
+end module copy_m
+
+program parallelism
+  use cudafor
+  use precision_m
+  use copy_m
+  
+  implicit none
+
+  type(dim3) :: grid, threadBlock
+  type(cudaEvent) :: startEvent, stopEvent
+  type(cudaDeviceProp) :: prop
+
+  real(fp_kind) :: a(N), b(N)
+  real(fp_kind), device :: a_d(N), b_d(N)
+
+  real :: time
+  integer :: i, smBytes, istat
+
+  
+  istat = cudaGetDeviceProperties(prop, 0)
+  write(*,"(/,'Device Name: ',a)") trim(prop%name)
+  write(*,"('Compute Capability: ',i0,'.',i0)") &
+       prop%major, prop%minor
+  if (fp_kind == singlePrecision) then
+     write(*,"('Single Precision')")
+  else
+     write(*,"('Double Precision')")
+  end if
+
+  a = 1.0
+  a_d = a
+
+  smBytes = prop%sharedMemPerBlock
+
+  istat = cudaEventCreate(startEvent)
+  istat = cudaEventCreate(stopEvent)
+
+  write(*,'(/,"Thread-level parallelism runs")')
+
+  write(*,'(/,"  Multiple Blocks per Multiprocessor")')
+  write(*,'(a20,a25)') 'Threads/Block', 'Bandwidth (GB/s)'
+
+  do i = prop%warpSize, prop%maxThreadsPerBlock, prop%warpSize
+     if (mod(N,i) /= 0) cycle 
+
+     b_d = 0.0     
+
+     grid = dim3(ceiling(real(N)/i),1,1)
+     threadBlock = dim3(i,1,1)
+
+     istat = cudaEventRecord(startEvent,0)
+     call copy<<<grid, threadBlock>>>(b_d, a_d)
+     istat = cudaEventRecord(stopEvent,0)
+     istat = cudaEventSynchronize(stopEvent)
+     istat = cudaEventElapsedTime(time, startEvent, stopEvent)
+     
+     b = b_d
+     if (all(b==a)) then
+        write(*,'(i20, f20.2)') &
+             i, 2.*1000*sizeof(a)/(1024**3*time)
+     else
+        write(*,'(a20)') '*** Failed ***'
+     end if
+  end do
+
+  write(*,'(/,"  Single Block per Multiprocessor")')
+  write(*,'(a20,a25)') 'Threads/Block', 'Bandwidth (GB/s)'
+
+  do i = prop%warpSize, prop%maxThreadsPerBlock, prop%warpSize
+     if (mod(N,i) /= 0) cycle 
+
+     b_d = 0.0     
+
+     grid = dim3(ceiling(real(N)/i),1,1)
+     threadBlock = dim3(i,1,1)
+
+     istat = cudaEventRecord(startEvent,0)
+     call copy<<<grid, threadBlock, 0.9*smBytes>>>(b_d, a_d)
+     istat = cudaEventRecord(stopEvent,0)
+     istat = cudaEventSynchronize(stopEvent)
+     istat = cudaEventElapsedTime(time, startEvent, stopEvent)
+     
+     b = b_d
+     if (all(b==a)) then
+        write(*,'(i20, f20.2)') i, 2.*sizeof(a)*1.0e-6/time
+     else
+        write(*,'(a20)') '*** Failed ***'
+     end if
+  end do
+
+  write(*,'(/,"Intruction-level parallelism runs")')
+
+  write(*,'(/,"  ILP=", i0, &
+        ", Single Block per Multiprocessor")') ILP
+  write(*,'(a20,a25)') 'Threads/Block', 'Bandwidth (GB/s)'
+
+  do i = prop%warpSize, prop%maxThreadsPerBlock, prop%warpSize
+     if (mod(N,i) /= 0) cycle 
+
+     b_d = 0.0     
+
+     grid = dim3(ceiling(real(N)/(i*ILP)),1,1)
+     threadBlock = dim3(i,1,1)
+
+     istat = cudaEventRecord(startEvent,0)
+     call copy_ILP<<<grid, threadBlock, &
+                     0.9*smBytes>>>(b_d, a_d)
+     istat = cudaEventRecord(stopEvent,0)
+     istat = cudaEventSynchronize(stopEvent)
+     istat = cudaEventElapsedTime(time, startEvent, stopEvent)
+     
+     b = b_d
+     if (all(b==a)) then
+        write(*,'(a20)') '*** Test Passed ***'
+        write(*,'(i20, f20.2)') i, 2.*sizeof(a)*1.0e-6/time
+     else
+        write(*,'(a20)') '*** Failed ***'
+     end if
+  end do
+
+end program parallelism

@@ -1,0 +1,66 @@
+! 
+!     Copyright (c) 2017, NVIDIA CORPORATION.  All rights reserved.
+!
+! NVIDIA CORPORATION and its licensors retain all intellectual property
+! and proprietary rights in and to this software, related documentation
+! and any modifications thereto.
+!
+!
+!    These example codes are a portion of the code samples from the companion
+!    website to the book "CUDA Fortran for Scientists and Engineers":
+!
+! http://store.elsevier.com/product.jsp?isbn=9780124169708
+!
+
+! Generate N random numbers on GPU, copy them back to CPU 
+! and print the first 4
+
+program curand_example
+  use precision_m
+  use curand_m
+  implicit none
+  real(fp_kind), allocatable:: hostData(:)
+  real(fp_kind), allocatable, device:: deviceData(:)
+  integer(kind=int_ptr_kind()) :: gen, N
+  integer(kind=8) :: seed
+
+  ! Define how many numbers we want to generate
+  N=20
+ 
+  ! Allocate array on CPU
+  allocate(hostData(N))
+
+  ! Allocate array on GPU
+  allocate(deviceData(N))
+
+  if (fp_kind == singlePrecision) then
+     write(*,"('Generating random numbers in single precision')")
+  else
+     write(*,"('Generating random numbers in double precision')")
+  end if
+
+  ! Create pseudonumber generator
+  call curandCreateGenerator(gen, CURAND_RNG_PSEUDO_DEFAULT)
+
+  ! Set seed
+  seed=1234
+  call curandSetPseudoRandomGeneratorSeed( gen, seed)
+
+  ! Generate N floats or double on device
+  call curandGenerateUniform(gen, deviceData, N)
+
+  ! Copy the data back to CPU
+  hostData=deviceData
+
+  ! print the first 4 of the sequence
+  write(*,*) hostData(1:4)
+
+  ! Deallocate data on CPU and GPU
+  deallocate(hostData)
+  deallocate(deviceData)
+  
+  ! Destroy the generator
+  call curandDestroyGenerator(gen)
+
+  write(*,*) "Test Passed"
+end program curand_example

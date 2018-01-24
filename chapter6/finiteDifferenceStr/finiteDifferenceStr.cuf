@@ -1,0 +1,349 @@
+! 
+!     Copyright (c) 2017, NVIDIA CORPORATION.  All rights reserved.
+!
+! NVIDIA CORPORATION and its licensors retain all intellectual property
+! and proprietary rights in and to this software, related documentation
+! and any modifications thereto.
+!
+!
+!    These example codes are a portion of the code samples from the companion
+!    website to the book "CUDA Fortran for Scientists and Engineers":
+!
+! http://store.elsevier.com/product.jsp?isbn=9780124169708
+!
+
+! This the main host code for the finite difference 
+! example which uses stretched grids.
+! The kernels are contained in the derivativeS_m module
+
+program derivativeTest
+  use cudafor
+  use precision_m
+  use derivativeStr_m
+
+  implicit none
+
+  real(fp_kind), parameter :: fx = 1.0, fy = 1.0, fz = 1.0
+  integer, parameter :: nReps = 20
+
+  real(fp_kind) :: f(mx,my,mz), df(mx,my,mz), sol(mx,my,mz)
+  real(fp_kind), device :: f_d(mx,my,mz), df_d(mx,my,mz)
+  real(fp_kind) :: twopi, error, maxError
+  type(cudaEvent) :: startEvent, stopEvent
+  type(cudaDeviceProp) :: prop
+  
+  real :: time
+  integer :: i, j, k, istat
+
+  ! Print device and precision
+
+  istat = cudaGetDeviceProperties(prop, 0)
+  write(*,"(/,'Device Name: ',a)") trim(prop%name)
+  write(*,"('Compute Capability: ',i0,'.',i0)") &
+       prop%major, prop%minor
+  if (fp_kind == singlePrecision) then
+     write(*,"('Single Precision')")
+  else
+     write(*,"('Double Precision')")
+  end if
+
+  ! initialize
+
+  twopi = 8.*atan(1.d0)
+  call setDerivativeParameters()
+
+  istat = cudaEventCreate(startEvent)
+  istat = cudaEventCreate(stopEvent)
+
+  ! x-derivative using 64x4 tile
+    
+  write(*,"(/,'x derivatives')")
+
+  do i = 1, mx
+     f(i,:,:) = cos(fx*twopi*x(i))
+  enddo
+  f_d = f
+  df_d = 0
+
+  call deriv_x<<<g_sp(1),b_sp(1)>>>(f_d, df_d)
+  istat = cudaEventRecord(startEvent,0)
+  do i = 1, nReps
+     call deriv_x<<<g_sp(1),b_sp(1)>>>(f_d, df_d)
+  enddo
+  istat = cudaEventRecord(stopEvent,0)
+  istat = cudaEventSynchronize(stopEvent)
+  istat = cudaEventElapsedTime(time, startEvent, stopEvent)
+
+  df = df_d
+  
+  do i = 1, mx
+     sol(i,:,:) = -fx*twopi*sin(fx*twopi*x(i))
+  enddo
+  
+  error = sqrt(sum((sol-df)**2)/(mx*my*mz))
+  maxError = maxval(abs(sol-df))
+
+  write(*,"(/,'  Using shared memory tile of x-y: ', &
+       i0, 'x', i0)") mx, sPencils
+  write(*,*) '  RMS error: ', error
+  write(*,*) '  MAX error: ', maxError
+  write(*,*) '  Average time (ms): ', time/nReps
+  write(*,*) '  Average Bandwidth (GB/s): ', &
+       2.*1.e-6*sizeof(f)/(time/nReps)
+
+  if (maxError .le. 0.00003_fp_kind) then
+     write(*,*) '  Test Passed'
+  else
+     write(*,*) '  Test Failed'
+  endif
+
+  ! x-derivative - similar to above but first
+  ! syncthreads removed
+    
+  do i = 1, mx
+     f(i,:,:) = cos(fx*twopi*x(i))
+  enddo
+  f_d = f
+  df_d = 0
+
+  call deriv_x_1sync<<<g_sp(1),b_sp(1)>>>(f_d, df_d)
+  istat = cudaEventRecord(startEvent,0)
+  do i = 1, nReps
+     call deriv_x_1sync<<<g_sp(1),b_sp(1)>>>(f_d, df_d)
+  enddo
+  istat = cudaEventRecord(stopEvent,0)
+  istat = cudaEventSynchronize(stopEvent)
+  istat = cudaEventElapsedTime(time, startEvent, stopEvent)
+
+  df = df_d
+  
+  do i = 1, mx
+     sol(i,:,:) = -fx*twopi*sin(fx*twopi*x(i))
+  enddo
+  
+  error = sqrt(sum((sol-df)**2)/(mx*my*mz))
+  maxError = maxval(abs(sol-df))
+
+  write(*,"(/,a,a, i0, 'x', i0)") &
+       '  Single syncthreads,', &
+       ' using shared memory tile of x-y: ', &
+       mx, sPencils
+  write(*,*) '  RMS error: ', error
+  write(*,*) '  MAX error: ', maxError
+  write(*,*) '  Average time (ms): ', time/nReps
+  write(*,*) '  Average Bandwidth (GB/s): ', &
+       2.*1.e-6*sizeof(f)/(time/nReps)
+
+  if (maxError .le. 0.00003_fp_kind) then
+     write(*,*) '  Test Passed'
+  else
+     write(*,*) '  Test Failed'
+  endif
+
+  ! x-derivative - uses extended tile (lPencils)
+      
+  do i = 1, mx
+     f(i,:,:) = cos(fx*twopi*x(i))
+  enddo
+  f_d = f
+  df_d = 0
+
+  call deriv_x_lPencils<<<g_lp(1),b_lp(1)>>>(f_d, df_d)
+  istat = cudaEventRecord(startEvent,0)
+  do i = 1, nReps
+     call deriv_x_lPencils<<<g_lp(1),b_lp(1)>>>(f_d, df_d)
+  enddo
+  istat = cudaEventRecord(stopEvent,0)
+  istat = cudaEventSynchronize(stopEvent)
+  istat = cudaEventElapsedTime(time, startEvent, stopEvent)
+
+  df = df_d
+  
+  do i = 1, mx
+     sol(i,:,:) = -fx*twopi*sin(fx*twopi*x(i))
+  enddo
+  
+  error = sqrt(sum((sol-df)**2)/(mx*my*mz))
+  maxError = maxval(abs(sol-df))
+
+  write(*,"(/,'  Using shared memory tile of x-y: ', &
+       i0, 'x', i0)") mx, lPencils
+  write(*,*) '  RMS error: ', error
+  write(*,*) '  MAX error: ', maxError
+  write(*,*) '  Average time (ms): ', time/nReps
+  write(*,*) '  Average Bandwidth (GB/s): ', &
+       2.*1.e-6*sizeof(f)/(time/nReps)
+
+  if (maxError .le. 0.00003_fp_kind) then
+     write(*,*) '  Test Passed'
+  else
+     write(*,*) '  Test Failed'
+  endif
+
+  ! y-derivative
+    
+  write(*,"(/,'y derivatives')")
+
+  do j = 1, my
+     f(:,j,:) = cos(fy*twopi*y(j))
+  enddo     
+  f_d = f
+  df_d = 0
+
+  call deriv_y<<<g_sp(2), b_sp(2)>>>(f_d, df_d)
+  istat = cudaEventRecord(startEvent,0)
+  do i = 1, nReps
+     call deriv_y<<<g_sp(2), b_sp(2)>>>(f_d, df_d)
+  enddo
+  istat = cudaEventRecord(stopEvent,0)
+  istat = cudaEventSynchronize(stopEvent)
+  istat = cudaEventElapsedTime(time, startEvent, stopEvent)
+
+  df = df_d  
+
+  do j = 1, my
+     sol(:,j,:) = -fy*twopi*sin(fy*twopi*y(j))
+  enddo
+  
+  error = sqrt(sum((sol-df)**2)/(mx*my*mz))
+  maxError = maxval(abs(sol-df))
+  
+  write(*,"(/,'  Using shared memory tile of x-y: ', &
+       i0, 'x', i0)") sPencils, my
+  write(*,*) '  RMS error: ', error
+  write(*,*) '  MAX error: ', maxError
+  write(*,*) '  Average time (ms): ', time/nReps
+  write(*,*) '  Average Bandwidth (GB/s): ', &
+       2.*1.e-6*sizeof(f)/(time/nReps)
+
+  if (maxError .le. 0.00003_fp_kind) then
+     write(*,*) '  Test Passed'
+  else
+     write(*,*) '  Test Failed'
+  endif
+
+  ! y-derivative lPencils
+    
+  do j = 1, my
+     f(:,j,:) = cos(fy*twopi*y(j))
+  enddo     
+  f_d = f
+  df_d = 0
+
+  call deriv_y_lPencils<<<g_lp(2), b_lp(2)>>>(f_d, df_d)
+  istat = cudaEventRecord(startEvent,0)
+  do i = 1, nReps
+     call deriv_y_lPencils<<<g_lp(2), b_lp(2)>>>(f_d, df_d)
+  enddo
+  istat = cudaEventRecord(stopEvent,0)
+  istat = cudaEventSynchronize(stopEvent)
+  istat = cudaEventElapsedTime(time, startEvent, stopEvent)
+
+  df = df_d  
+
+  do j = 1, my
+     sol(:,j,:) = -fy*twopi*sin(fy*twopi*y(j))
+  enddo
+  
+  error = sqrt(sum((sol-df)**2)/(mx*my*mz))
+  maxError = maxval(abs(sol-df))
+  
+  write(*,"(/,'  Using shared memory tile of x-y: ', &
+       i0, 'x', i0)") lPencils, my
+  write(*,*) '  RMS error: ', error
+  write(*,*) '  MAX error: ', maxError
+  write(*,*) '  Average time (ms): ', time/nReps
+  write(*,*) '  Average Bandwidth (GB/s): ', &
+       2.*1.e-6*sizeof(f)/(time/nReps)
+
+  if (maxError .le. 0.00003_fp_kind) then
+     write(*,*) '  Test Passed'
+  else
+     write(*,*) '  Test Failed'
+  endif
+
+  ! z-derivative
+
+  write(*,"(/,'z derivatives')")
+
+  do k = 1, mz
+     f(:,:,k) = cos(fz*twopi*z(k))
+  enddo     
+  f_d = f
+  df_d = 0
+
+  call deriv_z<<<g_sp(3),b_sp(3)>>>(f_d, df_d)
+  istat = cudaEventRecord(startEvent,0)
+  do i = 1, nReps
+     call deriv_z<<<g_sp(3),b_sp(3)>>>(f_d, df_d)
+  enddo
+  istat = cudaEventRecord(stopEvent,0)
+  istat = cudaEventSynchronize(stopEvent)
+  istat = cudaEventElapsedTime(time, startEvent, stopEvent)
+
+  df = df_d  
+
+  do k = 1, mz
+     sol(:,:,k) = -fz*twopi*sin(fz*twopi*z(k))
+  enddo
+  
+  error = sqrt(sum((sol-df)**2)/(mx*my*mz))
+  maxError = maxval(abs(sol-df))
+
+  write(*,"(/,'  Using shared memory tile of x-z: ', &
+       i0, 'x', i0)") sPencils, mz
+  write(*,*) '  RMS error: ', error
+  write(*,*) '  MAX error: ', maxError
+  write(*,*) '  Average time (ms): ', time/nReps
+  write(*,*) '  Average Bandwidth (GB/s): ', &
+       2.*1.e-6*sizeof(f)/(time/nReps)
+
+  if (maxError .le. 0.00003_fp_kind) then
+     write(*,*) '  Test Passed'
+  else
+     write(*,*) '  Test Failed'
+  endif
+
+  ! z-derivative lPencils
+
+  do k = 1, mz
+     f(:,:,k) = cos(fz*twopi*z(k))
+  enddo     
+  f_d = f
+  df_d = 0
+
+  call deriv_z_lPencils<<<g_lp(3),b_lp(3)>>>(f_d, df_d)
+  istat = cudaEventRecord(startEvent,0)
+  do i = 1, nReps
+     call deriv_z_lPencils<<<g_lp(3),b_lp(3)>>>(f_d, df_d)
+  enddo
+  istat = cudaEventRecord(stopEvent,0)
+  istat = cudaEventSynchronize(stopEvent)
+  istat = cudaEventElapsedTime(time, startEvent, stopEvent)
+
+  df = df_d  
+
+  do k = 1, mz
+     sol(:,:,k) = -fz*twopi*sin(fz*twopi*z(k))
+  enddo
+  
+  error = sqrt(sum((sol-df)**2)/(mx*my*mz))
+  maxError = maxval(abs(sol-df))
+
+  write(*,"(/,'  Using shared memory tile of x-z: ', &
+       i0, 'x', i0)") lPencils, mz
+  write(*,*) '  RMS error: ', error
+  write(*,*) '  MAX error: ', maxError
+  write(*,*) '  Average time (ms): ', time/nReps
+  write(*,*) '  Average Bandwidth (GB/s): ', &
+       2.*1.e-6*sizeof(f)/(time/nReps)
+
+  if (maxError .le. 0.00003_fp_kind) then
+     write(*,*) '  Test Passed'
+  else
+     write(*,*) '  Test Failed'
+  endif
+
+  write(*,*)
+
+end program derivativeTest

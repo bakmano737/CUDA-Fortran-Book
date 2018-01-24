@@ -1,0 +1,209 @@
+! 
+!     Copyright (c) 2017, NVIDIA CORPORATION.  All rights reserved.
+!
+! NVIDIA CORPORATION and its licensors retain all intellectual property
+! and proprietary rights in and to this software, related documentation
+! and any modifications thereto.
+!
+!
+!    These example codes are a portion of the code samples from the companion
+!    website to the book "CUDA Fortran for Scientists and Engineers":
+!
+! http://store.elsevier.com/product.jsp?isbn=9780124169708
+!
+
+module kernels_m
+  real, texture, pointer :: aTex(:,:) 
+  integer, parameter :: n = 2048
+  integer, parameter :: nTile = 32
+contains
+  attributes(global) subroutine average4(b, a)
+    implicit none
+    real :: b(n,n), a(0:n+1,0:n+1)
+    integer :: i, j
+    i = blockDim%x*(blockIdx%x-1)+threadIdx%x
+    j = blockDim%y*(blockIdx%y-1)+threadIdx%y
+    b(i,j) = 0.25*( &
+                  a(i-1,j)+ & 
+         a(i,j-1)+           a(i,j+1)+&
+                  a(i+1,j))         
+  end subroutine average4
+
+  attributes(global) subroutine average8(b, a)
+    implicit none
+    real :: b(n,n), a(0:n+1,0:n+1)
+    integer :: i, j
+    i = blockDim%x*(blockIdx%x-1)+threadIdx%x
+    j = blockDim%y*(blockIdx%y-1)+threadIdx%y
+    b(i,j) = 0.125*( &
+         a(i-1,j-1)+a(i-1,j)+a(i-1,j+1)+ & 
+         a(i,j-1)+           a(i,j+1)+&
+         a(i+1,j-1)+a(i+1,j)+a(i+1,j+1))         
+  end subroutine average8
+
+  attributes(global) subroutine average4Tex(b)
+    implicit none
+    real :: b(n,n)
+    integer :: i, j
+    i = blockDim%x*(blockIdx%x-1)+threadIdx%x
+    j = blockDim%y*(blockIdx%y-1)+threadIdx%y
+    b(i,j) = 0.25*( &
+                     aTex(i-1,j)+ & 
+         aTex(i,j-1)+              aTex(i,j+1)+ &
+                     aTex(i+1,j))
+  end subroutine average4Tex
+
+  attributes(global) subroutine average8Tex(b)
+    implicit none
+    real :: b(n,n)
+    integer :: i, j
+    i = blockDim%x*(blockIdx%x-1)+threadIdx%x
+    j = blockDim%y*(blockIdx%y-1)+threadIdx%y
+    b(i,j) = 0.125*( &
+         aTex(i-1,j-1)+aTex(i-1,j)+aTex(i-1,j+1)+ & 
+         aTex(i,j-1)+              aTex(i,j+1)+ &
+         aTex(i+1,j-1)+aTex(i+1,j)+aTex(i+1,j+1))
+  end subroutine average8Tex
+end module kernels_m
+
+program average
+  use cudafor
+  use kernels_m
+  
+  implicit none
+  
+  real :: b(n,n), res4(n,n), res8(n,n)
+  real, device :: b_d(n,n)
+  real :: a(0:n+1,0:n+1)
+  real, device, target :: a_d(0:n+1,0:n+1)
+  type(cudaEvent) :: startEvent, stopEvent
+  type(cudaDeviceProp) :: prop
+  integer :: i, j, istat
+  real :: time
+  type(dim3) :: grid, tBlock
+
+  tBlock = dim3(nTile,nTile,1)
+  grid = dim3(n/nTile, n/nTile, 1)
+
+  istat = cudaGetDeviceProperties(prop, 0)
+  write(*,'(/,"Device: ",a,/)') trim(prop%name)
+
+  call random_number(a)
+  a_d = a
+
+  do j = 1, n
+     do i = 1, n
+        res4(i,j) = 0.25*( &
+                       a(i-1,j)+ & 
+             a(i,j-1)+           a(i,j+1)+&
+                       a(i+1,j))
+
+        res8(i,j) = 0.125*( &
+             a(i-1,j-1)+a(i-1,j)+a(i-1,j+1)+ & 
+             a(i,j-1)+           a(i,j+1)+&
+             a(i+1,j-1)+a(i+1,j)+a(i+1,j+1))
+     enddo
+  enddo
+
+  istat = cudaEventCreate(startEvent)
+  istat = cudaEventCreate(stopEvent)
+
+  ! 4pt averages
+
+  write(*,*) '4-point versions'
+
+  ! global
+
+  call average4<<<grid, tBlock>>>(b_d, a_d)
+
+  istat = cudaEventRecord(startEvent,0)
+  call average4<<<grid,tBlock>>>(b_d, a_d)
+  istat = cudaEventRecord(stopEvent,0)
+  istat = cudaEventSynchronize(stopEvent)
+  istat = cudaEventElapsedTime(time, startEvent, stopEvent)
+  write(*,*) '  Global Bandwidth  (GB/s):', &
+       4*(n**2 + (n+2)**2)/time*1.e-6
+  b = b_d
+  write(*,*) '    Max Error: ', maxval(b-res4)
+  
+  if (maxval(b-res4) .gt. 1.0e-7) then
+     write(*,*) "Test Failed"
+  else
+     write(*,*) "Test Passed"
+  endif
+
+  ! texture
+
+  ! bind the texture
+  aTex => a_d
+
+  call average4Tex<<<grid,tBlock>>>(b_d)
+
+  istat = cudaEventRecord(startEvent,0)
+  call average4Tex<<<grid,tBlock>>>(b_d)
+  istat = cudaEventRecord(stopEvent,0)
+  istat = cudaEventSynchronize(stopEvent)
+  istat = cudaEventElapsedTime(time, startEvent, stopEvent)
+  write(*,*) '  Texture Bandwidth (GB/s):', &
+       4*(n**2 + (n+2)**2)/time*1.e-6
+  b = b_d
+  write(*,*) '    Max Error: ', maxval(b-res4)
+
+  if (maxval(b-res4) .gt. 1.0e-7) then
+     write(*,*) "Test Failed"
+  else
+     write(*,*) "Test Passed"
+  endif
+
+  ! 8pt averages
+
+  write(*,*)
+  write(*,*) '8-point versions'
+
+  ! global
+
+  call average8<<<grid, tBlock>>>(b_d, a_d)
+
+  istat = cudaEventRecord(startEvent,0)
+  call average8<<<grid,tBlock>>>(b_d, a_d)
+  istat = cudaEventRecord(stopEvent,0)
+  istat = cudaEventSynchronize(stopEvent)
+  istat = cudaEventElapsedTime(time, startEvent, stopEvent)
+  write(*,*) '  Global Bandwidth  (GB/s):', &
+       4*(n**2 + (n+2)**2)/time*1.e-6
+  b = b_d
+  write(*,*) '    Max Error: ', maxval(b-res8)
+  
+  if (maxval(b-res8) .gt. 1.0e-7) then
+     write(*,*) "Test Failed"
+  else
+     write(*,*) "Test Passed"
+  endif
+
+  ! texture
+
+  call average8Tex<<<grid,tBlock>>>(b_d)
+
+  istat = cudaEventRecord(startEvent,0)
+  call average8Tex<<<grid,tBlock>>>(b_d)
+  istat = cudaEventRecord(stopEvent,0)
+  istat = cudaEventSynchronize(stopEvent)
+  istat = cudaEventElapsedTime(time, startEvent, stopEvent)
+  write(*,*) '  Texture Bandwidth (GB/s):', &
+       4*(n**2 + (n+2)**2)/time*1.e-6
+  b = b_d
+  write(*,*) '    Max Error: ', maxval(b-res8)
+  
+  ! unbind the texture
+  nullify(aTex)
+
+  istat = cudaEventDestroy(startEvent)
+  istat = cudaEventDestroy(stopEvent)     
+
+  if (maxval(b-res8) .gt. 1.0e-7) then
+     write(*,*) "Test Failed"
+  else
+     write(*,*) "Test Passed"
+  endif
+
+end program average

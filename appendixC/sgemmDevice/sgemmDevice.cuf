@@ -1,0 +1,42 @@
+! 
+!     Copyright (c) 2017, NVIDIA CORPORATION.  All rights reserved.
+!
+! NVIDIA CORPORATION and its licensors retain all intellectual property
+! and proprietary rights in and to this software, related documentation
+! and any modifications thereto.
+!
+!
+!    These example codes are a portion of the code samples from the companion
+!    website to the book "CUDA Fortran for Scientists and Engineers":
+!
+! http://store.elsevier.com/product.jsp?isbn=9780124169708
+!
+
+program sgemmDevice
+  use cublas
+  use cudafor
+  implicit none
+  integer, parameter :: m = 100, n = 100, k = 100
+  real :: a(m,k), b(k,n), c(m,n)
+  real, device :: a_d(m,k), b_d(k,n), c_d(m,n)
+  real, parameter :: alpha = 1.0, beta = 0.0
+  integer :: lda = m, ldb = k, ldc = m
+  integer :: istat
+
+  a = 1.0; b = 2.0; c = 0.0
+  a_d = a; b_d = b; c_d = c
+
+  istat = cublasInit()
+  call cublasSgemm('n','n',m,n,k, &
+       alpha,a_d,lda,b_d,ldb,beta,c_d,ldc)
+
+  c = c_d
+  write(*,*) 'Max error =', maxval(c-k*2.0)
+ 
+  if (maxval(c-k*2.0) .gt. 0.00000001) then
+     write(*,*) "Test Failed"
+  else
+     write(*,*) "Test Passed"
+  endif
+
+end program sgemmDevice

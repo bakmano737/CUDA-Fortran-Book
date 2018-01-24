@@ -1,0 +1,30 @@
+
+     Copyright (c) 2017, NVIDIA CORPORATION.  All rights reserved.
+
+NVIDIA CORPORATION and its licensors retain all intellectual property
+and proprietary rights in and to this software, related documentation
+and any modifications thereto.
+
+
+The example codes included in this directory are a portion of the code samples
+from the companion website to the book "CUDA Fortran for Scientists and Engineers":
+
+http://store.elsevier.com/product.jsp?isbn=9780124169708
+
+These codes are organized by chapter:
+
+Part I - CUDA Fortran Programming
+
+Chapter 1: Introduction
+Chapter 2: Performance Measurement and Metrics
+Chapter 3: Optimization
+Chapter 4: Multi-GPU Programming
+
+Part II - Case Studies
+
+Chapter 5: Monte Carlo Method
+Chapter 6: Finite Difference Method
+Chapter 7: Applications of Fast Fourier Transform
+
+Appendix C: Calling CUDA C from CUDA Fortran
+

@@ -1,0 +1,248 @@
+! 
+!     Copyright (c) 2017, NVIDIA CORPORATION.  All rights reserved.
+!
+! NVIDIA CORPORATION and its licensors retain all intellectual property
+! and proprietary rights in and to this software, related documentation
+! and any modifications thereto.
+!
+!
+!    These example codes are a portion of the code samples from the companion
+!    website to the book "CUDA Fortran for Scientists and Engineers":
+!
+! http://store.elsevier.com/product.jsp?isbn=9780124169708
+!
+
+module transpose_m
+
+  implicit none
+  integer, parameter :: cudaTileDim = 32
+  integer, parameter :: blockRows = 8
+
+contains
+
+  attributes(global) &
+       subroutine cudaTranspose(odata, ldo, idata, ldi)
+    real, intent(out) :: odata(ldo,*)
+    real, intent(in) :: idata(ldi,*)
+    integer, value, intent(in) :: ldo, ldi
+    real, shared :: tile(cudaTileDim+1, cudaTileDim)
+    integer :: x, y, j
+
+    x = (blockIdx%x-1) * cudaTileDim + threadIdx%x
+    y = (blockIdx%y-1) * cudaTileDim + threadIdx%y
+
+    do j = 0, cudaTileDim-1, blockRows
+       tile(threadIdx%x, threadIdx%y+j) = idata(x,y+j)
+    end do
+
+    call syncthreads()
+
+    x = (blockIdx%y-1) * cudaTileDim + threadIdx%x
+    y = (blockIdx%x-1) * cudaTileDim + threadIdx%y
+
+    do j = 0, cudaTileDim-1, blockRows
+       odata(x,y+j) = tile(threadIdx%y+j, threadIdx%x)          
+    end do
+  end subroutine cudaTranspose
+
+end module transpose_m
+
+!
+! Main code
+!
+
+program transposeMPI
+  use cudafor
+  use mpi
+  use transpose_m 
+
+  implicit none
+
+  ! global array size
+  integer, parameter :: nx = 2048, ny = 2048
+
+  ! host arrays (global)
+  real :: h_idata(nx,ny), h_tdata(ny,nx), gold(ny,nx)
+
+  ! CUDA vars and device arrays
+  integer :: deviceID
+  type (dim3) :: dimGrid, dimBlock
+  real, device, allocatable :: &
+       d_idata(:,:), d_tdata(:,:), d_sTile(:,:), d_rTile(:,:)
+
+  ! MPI stuff
+  integer :: mpiTileDimX, mpiTileDimY
+  integer :: myrank, nprocs, tag, ierr, localRank
+  integer :: nstages, stage, sRank, rRank
+  integer :: status(MPI_STATUS_SIZE)
+  real(8) :: timeStart, timeStop
+  character (len=10) :: localRankStr
+
+  integer :: i, j, nyl, jl, jg, p
+  integer :: xOffset, yOffset
+
+  ! for MVAPICH set device before MPI initialization
+  
+  call get_environment_variable('MV2_COMM_WORLD_LOCAL_RANK', &
+       localRankStr)
+  read(localRankStr,'(i10)') localRank
+  ierr = cudaSetDevice(localRank)
+
+  ! MPI initialization
+
+  call MPI_init(ierr)
+  call MPI_comm_rank(MPI_COMM_WORLD, myrank, ierr)
+  call MPI_comm_size(MPI_COMM_WORLD, nProcs, ierr)
+
+  ! check parameters and calculate execution configuration
+
+  if (mod(nx,nProcs) == 0 .and. mod(ny,nProcs) == 0) then
+     mpiTileDimX = nx/nProcs
+     mpiTileDimY = ny/nProcs
+  else
+     write(*,*) 'ny must be an integral multiple of nProcs'
+     call MPI_Finalize(ierr)
+     stop
+  endif
+
+  if (mod(mpiTileDimX, cudaTileDim) /= 0 .or. &
+       mod(mpiTileDimY, cudaTileDim) /= 0) then
+     write(*,*) 'mpiTileDimX and mpitileDimY must be an ', &
+          'integral multiple of cudaTileDim'
+     call MPI_Finalize(ierr)
+     stop
+  end if
+  
+  if (mod(cudaTileDim, blockRows) /= 0) then
+     write(*,*) 'cudaTileDim must be a multiple of blockRows'
+     call MPI_Finalize(ierr)
+     stop
+  end if
+
+  dimGrid = dim3(mpiTileDimX/cudaTileDim, &
+       mpiTileDimY/cudaTileDim, 1)
+  dimBlock = dim3(cudaTileDim, blockRows, 1)
+
+  ! write parameters
+
+  if (myrank == 0) then
+     write(*,*)
+     write(*,"(/,'Array size: ', i0,'x',i0,/)") nx, ny
+
+     write(*,"('CUDA block size: ', i0,'x',i0, &
+          ',  CUDA tile size: ', i0,'x',i0)") &
+          cudaTileDim, blockRows, cudaTileDim, cudaTileDim
+     
+     write(*,"('dimGrid: ', i0,'x',i0,'x',i0, &
+          ',   dimBlock: ', i0,'x',i0,'x',i0,/)") &
+          dimGrid%x, dimGrid%y, dimGrid%z, &
+          dimBlock%x, dimBlock%y, dimBlock%z
+     
+     write(*,"('nprocs: ', i0, ',  Local input array size: ', &
+          i0,'x',i0)") nprocs, nx, mpiTileDimY
+     write(*,"('mpiTileDim: ', i0,'x',i0,/)") &
+          mpiTileDimX, mpiTileDimY
+  endif
+
+  ! initialize data
+
+  ! host - each process has entire array on host (for now)
+
+  do p = 0, nProcs-1
+     do jl = 1, mpiTileDimY
+        jg = p*mpiTileDimY + jl
+        do i = 1, nx
+           h_idata(i,jg) = i+(jg-1)*nx 
+        enddo
+     enddo
+  enddo
+
+  gold = transpose(h_idata)
+
+  ! device - each process has 
+  ! nx*mpiTileDimY = ny*mpiTileDimX  elements
+
+  allocate(d_idata(nx, mpiTileDimY), &
+       d_tdata(ny, mpiTileDimX), &
+       d_sTile(mpiTileDimX,mpiTileDimY), &
+       d_rTile(mpiTileDimX, mpiTileDimY))
+  
+  yOffset = myrank*mpiTileDimY
+  d_idata(1:nx,1:mpiTileDimY) = &
+       h_idata(1:nx,yOffset+1:yOffset+mpiTileDimY)
+
+  d_tdata = -1.0
+  
+
+  ! ---------
+  ! transpose
+  ! ---------
+
+  call MPI_BARRIER(MPI_COMM_WORLD, ierr)
+  timeStart = MPI_Wtime()
+
+  ! 0th stage - local transpose
+
+  call cudaTranspose<<<dimGrid, dimBlock>>> &
+       (d_tdata(myrank*mpiTileDimY+1,1), ny, &
+       d_idata(myrank*mpiTileDimX+1,1), nx)
+
+  ! other stages that involve MPI transfers
+
+  do stage = 1, nProcs-1
+     ! sRank = the rank to which myrank sends data
+     ! rRank = the rank from which myrank receives data
+     sRank = modulo(myrank-stage, nProcs) 
+     rRank = modulo(myrank+stage, nProcs) 
+
+     call MPI_BARRIER(MPI_COMM_WORLD, ierr)
+
+     ! pack tile so data to be sent is contiguous
+
+     !$cuf kernel do(2) <<<*,*>>>
+     do j = 1, mpiTileDimY
+        do i = 1, mpiTileDimX
+           d_sTile(i,j) = d_idata(sRank*mpiTileDimX+i,j)
+        enddo
+     enddo
+
+     call MPI_SENDRECV(d_sTile, mpiTileDimX*mpiTileDimY, &
+          MPI_REAL, sRank, myrank, &
+          d_rTile, mpiTileDimX*mpiTileDimY, MPI_REAL, &
+          rRank, rRank, MPI_COMM_WORLD, status, ierr)
+
+     ! do transpose from receive tile into final array 
+     ! (no need to unpack)
+
+     call cudaTranspose<<<dimGrid, dimBlock>>> &
+          (d_tdata(rRank*mpiTileDimY+1,1), ny, &
+          d_rTile, mpiTileDimX)
+     
+  end do ! stage     
+
+  call MPI_BARRIER(MPI_COMM_WORLD, ierr)
+  timeStop = MPI_Wtime()
+
+  ! check results
+
+  h_tdata = d_tdata
+
+  xOffset = myrank*mpiTileDimX
+  if (all(h_tdata(1:ny,1:mpiTileDimX) == &
+       gold(1:ny, xOffset+1:xOffset+mpiTileDimX))) then
+     write(*,"('[',i0,']', '*** Test Passed ***',/)") myrank
+     if (myrank == 0) then
+        write(*,"('Bandwidth (GB/s): ', f7.2,/)") &
+             2.*(nx*ny*4)/(1.0e+9*(timeStop-timeStart)) 
+     endif
+  else
+     write(*,"('[',i0,']', '*** Failed ***',/)") myrank
+  endif
+ 
+  ! cleanup
+
+  deallocate(d_idata, d_tdata, d_sTile, d_rTile)
+
+  call MPI_Finalize(ierr)
+
+end program transposeMPI

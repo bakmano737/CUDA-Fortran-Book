@@ -1,0 +1,102 @@
+! 
+!     Copyright (c) 2017, NVIDIA CORPORATION.  All rights reserved.
+!
+! NVIDIA CORPORATION and its licensors retain all intellectual property
+! and proprietary rights in and to this software, related documentation
+! and any modifications thereto.
+!
+!
+!    These example codes are a portion of the code samples from the companion
+!    website to the book "CUDA Fortran for Scientists and Engineers":
+!
+! http://store.elsevier.com/product.jsp?isbn=9780124169708
+!
+
+module kernels_m
+  use precision_m
+contains
+  attributes(global) subroutine offset(a, s)
+    real(fp_kind) :: a(*)
+    integer, value :: s
+    integer :: i
+    i = blockDim%x*(blockIdx%x-1)+threadIdx%x + s
+    a(i) = a(i)+1
+  end subroutine offset
+
+  attributes(global) subroutine stride(a, s)
+    real(fp_kind) :: a(*)
+    integer, value :: s
+    integer :: i
+    i = (blockDim%x*(blockIdx%x-1)+threadIdx%x) * s
+    a(i) = a(i)+1
+  end subroutine stride
+end module kernels_m
+
+program offsetNStride
+  use cudafor
+  use kernels_m
+  
+  implicit none
+  
+  integer, parameter :: nMB = 4  ! transfer size in MB
+  integer, parameter :: n = nMB*1024*1024/fp_kind
+  integer, parameter :: blockSize = 256
+  ! array dimensions are 33*n for stride cases
+  real(fp_kind), device :: a_d(33*n), b_d(33*n)
+  type(cudaEvent) :: startEvent, stopEvent
+  type(cudaDeviceProp) :: prop
+  integer :: i, istat
+  real(4) :: time
+
+
+  istat = cudaGetDeviceProperties(prop, 0)
+  write(*,'(/,"Device: ",a)') trim(prop%name)
+  write(*,'("Transfer size (MB): ",i0)') nMB
+
+  if (kind(a_d) == singlePrecision) then
+     write(*,'(a,/)') 'Single Precision'
+  else
+     write(*,'(a,/)') 'Double Precision'
+  endif
+
+  istat = cudaEventCreate(startEvent)
+  istat = cudaEventCreate(stopEvent)
+ 
+  write(*,*) 'Offset, Bandwidth (GB/s):'
+  call offset<<<n/blockSize,blockSize>>>(b_d, 0)  
+  do i = 0, 32
+     a_d = 0.0
+     istat = cudaEventRecord(startEvent,0)
+     call offset<<<n/blockSize,blockSize>>>(a_d, i)
+     istat = cudaEventRecord(stopEvent,0)
+     istat = cudaEventSynchronize(stopEvent)
+     
+     istat = cudaEventElapsedTime(time, startEvent, &
+          stopEvent)
+     write(*,*) i, 2*n*fp_kind/time*1.e-6
+  enddo
+ 
+  write(*,*)
+  write(*,*) 'Stride, Bandwidth (GB/s):'
+  call stride<<<n/blockSize,blockSize>>>(b_d, 1)
+  do i = 1, 32
+     a_d = 0.0
+     istat = cudaEventRecord(startEvent,0)
+     call stride<<<n/blockSize,blockSize>>>(a_d, i)
+     istat = cudaEventRecord(stopEvent,0)
+     istat = cudaEventSynchronize(stopEvent)
+     istat = cudaEventElapsedTime(time, startEvent, &
+          stopEvent)
+     write(*,*) i, 2*n*fp_kind/time*1.e-6
+  enddo
+
+  istat = cudaEventDestroy(startEvent)
+  istat = cudaEventDestroy(stopEvent)
+
+  if (istat .ne. 0) then
+     write(*,*) "Test Failed"
+  else
+     write(*,*) "Test Passed"
+  endif 
+
+end program offsetNStride

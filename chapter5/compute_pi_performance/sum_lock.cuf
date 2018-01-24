@@ -1,0 +1,62 @@
+! 
+!     Copyright (c) 2017, NVIDIA CORPORATION.  All rights reserved.
+!
+! NVIDIA CORPORATION and its licensors retain all intellectual property
+! and proprietary rights in and to this software, related documentation
+! and any modifications thereto.
+!
+!
+!    These example codes are a portion of the code samples from the companion
+!    website to the book "CUDA Fortran for Scientists and Engineers":
+!
+! http://store.elsevier.com/product.jsp?isbn=9780124169708
+!
+
+module sumgpu_lock_m
+
+  use precision_m
+  implicit none
+  integer, device::  lock=0
+
+contains
+
+  attributes(global) subroutine sum(input,partial,N)
+    real(fp_kind) :: input(N)
+    integer :: partial(256)
+    integer, shared, dimension(256) :: psum
+    !integer, shared :: psum(*)
+    integer :: total
+    integer(int_ptr_kind()),value :: N
+    integer :: i,index, inext,interior, ierr
+    
+    index=threadIdx%x+(BlockIdx%x-1)*BlockDim%x
+    
+    interior=0
+    do i=index,N/2,BlockDim%x*GridDim%x
+       if( (input(i)**2+input(i+N/2)**2) <= 1._fp_kind ) interior=interior+1
+    end do
+
+    ! Local reduction per block
+    index=threadIdx%x
+    
+    psum(index)=interior
+    call syncthreads()
+    
+    inext=blockDim%x/2
+    do while ( inext >=1 )
+       if (index <=inext) psum(index)=psum(index)+psum(index+inext)
+       inext = inext /2
+       call syncthreads()
+    end do
+    
+    if (index == 1) then
+       do while ( atomiccas(lock,0,1) == 1)
+       end do
+       partial(1)=partial(1)+psum(1)
+       call threadfence()
+       lock =0
+    end if
+    
+  end subroutine sum
+  
+end module sumgpu_lock_m

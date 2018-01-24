@@ -1,0 +1,66 @@
+! 
+!     Copyright (c) 2017, NVIDIA CORPORATION.  All rights reserved.
+!
+! NVIDIA CORPORATION and its licensors retain all intellectual property
+! and proprietary rights in and to this software, related documentation
+! and any modifications thereto.
+!
+!
+!    These example codes are a portion of the code samples from the companion
+!    website to the book "CUDA Fortran for Scientists and Engineers":
+!
+! http://store.elsevier.com/product.jsp?isbn=9780124169708
+!
+
+module kernel
+contains
+  attributes(global) subroutine assign(a, v)
+    implicit none
+    real :: a(*)
+    real, value :: v
+    a(threadIdx%x) = v
+  end subroutine assign
+end module kernel
+
+program minimal
+  use cudafor
+  use kernel
+  implicit none
+  integer, parameter :: n=32
+  real :: a(n)
+  real, device, allocatable :: a0_d(:), a1_d(:)
+  integer :: nDevices, istat
+
+  istat = cudaGetDeviceCount(nDevices)
+  if (nDevices < 2) then
+     write(*,*) 'This program requires at least two GPUs'
+     stop
+  end if
+  
+  istat = cudaSetDevice(0)
+  allocate(a0_d(n))
+  call assign<<<1,n>>>(a0_d, 3.0)
+  a = a0_d
+  deallocate(a0_d)
+  write(*,*) 'Device 0: ', a(1)
+
+  if (istat .eq. 0) then
+     write(*,*) "Test Passed"
+  else
+     write(*,*) "Test Failed"
+  endif
+
+  istat = cudaSetDevice(1)
+  allocate(a1_d(n))
+  call assign<<<1,n>>>(a1_d, 4.0)
+  a = a1_d
+  deallocate(a1_d)
+  write(*,*) 'Device 1: ', a(1)
+
+  if (istat .eq. 0) then
+     write(*,*) "Test Passed"
+  else
+     write(*,*) "Test Failed"
+  endif
+
+end program minimal

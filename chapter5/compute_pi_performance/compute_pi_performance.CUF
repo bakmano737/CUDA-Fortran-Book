@@ -1,0 +1,149 @@
+! 
+!     Copyright (c) 2017, NVIDIA CORPORATION.  All rights reserved.
+!
+! NVIDIA CORPORATION and its licensors retain all intellectual property
+! and proprietary rights in and to this software, related documentation
+! and any modifications thereto.
+!
+!
+!    These example codes are a portion of the code samples from the companion
+!    website to the book "CUDA Fortran for Scientists and Engineers":
+!
+! http://store.elsevier.com/product.jsp?isbn=9780124169708
+!
+
+program compute_pi
+  use precision_m
+  use curand_m
+  use cudafor
+  use sumgpu_lock_m
+  use sumgpu_m
+  implicit none
+  real(fp_kind), allocatable:: hostData(:)
+  real(fp_kind), allocatable, device:: deviceData(:)
+  real(fp_kind):: pival
+  integer :: inside_cpu,inside, i, iter, Nhalf,partial_cpu(256)
+  integer :: inside_cuf,inside_ts, inside_ss
+  integer, device :: inside_gpu, partial(256)
+  integer(kind=int_ptr_kind()):: gen, N
+  integer(kind=8):: seed
+  
+  integer :: clock_start,clock_end,clock_rate
+  real :: elapsed_cuf, elapsed_ts,elapsed_ss, elapsed_cpu
+  
+  call system_clock(count_rate=clock_rate) ! Find the rate
+  
+  ! Define how many numbers we want to generate
+  
+  N=2000
+  ! Set seed
+  ! seed=1234
+  seed=1234567
+  
+  if (fp_kind == singlePrecision) then
+     print *, " Compute pi  in single precision (seed= ",seed,")"
+  else
+     print *, " Compute pi  in double precision (seed= ",seed,")"
+  end if
+  
+#ifdef LOOP
+  do iter=1,3
+     N=N*10
+#endif
+     
+     Nhalf=N/2
+     
+     ! Allocate array on CPU
+     allocate(hostData(N))
+     
+     ! Allocate array on GPU
+     allocate(deviceData(N))
+     
+     ! Create pseudonumber generator
+     call curandCreateGenerator(gen, CURAND_RNG_PSEUDO_DEFAULT)
+     
+     call curandSetPseudoRandomGeneratorSeed( gen, seed)
+     
+     ! Generate N floats or double on device
+     call curandGenerateUniform(gen, deviceData, N)
+     
+     ! Copy the data back to CPU to check result later
+     hostData=deviceData
+     
+     ! Perform the test on GPU using CUF kernel
+     inside=0
+     call system_clock(count=clock_start) ! Start timing
+     !$cuf kernel do <<<*,*>>>
+     do i=1,Nhalf
+        if( (deviceData(i)**2+deviceData(i+Nhalf)**2) <= 1._fp_kind ) inside=inside+1
+     end do
+     inside_cuf=inside
+     call system_clock(count=clock_end) ! End timing
+     elapsed_cuf=REAL(clock_end-clock_start,doublePrecision)/REAL(clock_rate,doublePrecision)
+     
+     ! Perform the test on GPU using two stage reduction  kernels
+     inside=0
+     call system_clock(count=clock_start) ! Start timing
+     call partial_sum<<<256,256,256*4>>>(deviceData,partial,N)
+     call final_sum<<<1,256,256*4>>>(partial,inside_gpu)
+     inside_ts=inside_gpu
+     call system_clock(count=clock_end) ! End timing
+     elapsed_ts=REAL(clock_end-clock_start,doublePrecision)/REAL(clock_rate,doublePrecision)
+     
+     ! Perform the test on GPU using single stage reduction  kernel 
+     inside=0
+     call system_clock(count=clock_start) ! Start timing
+     partial(1)=0
+     call sum<<<64,256,256*4>>>(deviceData,partial,N)
+     inside_ss=partial(1)
+     call system_clock(count=clock_end) ! End timing
+     elapsed_ss=REAL(clock_end-clock_start,doublePrecision)/REAL(clock_rate,doublePrecision)
+     
+     
+     ! Perform the test on CPU 
+     inside_cpu=0
+     call system_clock(count=clock_start) ! Start timing
+     !$omp parallel do reduction(+: inside_cpu) if (Nhalf >10000 )
+     do i=1,Nhalf
+        if( (hostData(i)**2+hostData(i+Nhalf)**2) <= 1._fp_kind ) & 
+             inside_cpu=inside_cpu+1
+     end do
+     !$omp end parallel do 
+     call system_clock(count=clock_end) ! End timing
+     elapsed_cpu=REAL(clock_end-clock_start,doublePrecision)/REAL(clock_rate,doublePrecision)
+     
+     print *," Times (CUF),(Two stages), (Single stage) (CPU):"
+     print *,elapsed_cuf,elapsed_ts,elapsed_ss, elapsed_cpu
+     ! Check the results
+     if ( (inside_cuf .eq. inside_ts) .and. (inside_cuf .eq. inside_ss)) then
+        inside =inside_cuf
+     else
+        print *,"Mismatch between GPU implementations", inside_cuf, inside_ts,inside_ss
+     end if
+     if (inside_cpu .ne. inside) print *,"Mismatch between CPU/GPU", inside_cpu,inside
+     
+     ! print *,partial_cpu
+     
+     ! Print the value of pi and the error
+     pival= 4._fp_kind*real(inside,fp_kind)/real(Nhalf,fp_kind)
+     print"(t3,a,i10,a,f10.8,a,e11.4)", &
+          "Samples=",Nhalf,"  Pi=", pival,"  Error=",abs(pival-2.0_fp_kind*asin(1.0_fp_kind))
+     print *," "
+
+     if (abs(pival-2.0_fp_kind*asin(1.0_fp_kind)) .le. 0.03_fp_kind) then
+        print *, "Test Passed"
+     else
+        print *, "Test Failed"
+     endif
+     
+     ! Deallocate data on CPU and GPU
+     deallocate(hostData)
+     deallocate(deviceData)
+     
+     ! Destroy the generator
+     call curandDestroyGenerator(gen)
+     
+#ifdef LOOP
+  end do
+#endif
+end program compute_pi

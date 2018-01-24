@@ -1,0 +1,41 @@
+! 
+!     Copyright (c) 2017, NVIDIA CORPORATION.  All rights reserved.
+!
+! NVIDIA CORPORATION and its licensors retain all intellectual property
+! and proprietary rights in and to this software, related documentation
+! and any modifications thereto.
+!
+!
+!    These example codes are a portion of the code samples from the companion
+!    website to the book "CUDA Fortran for Scientists and Engineers":
+!
+! http://store.elsevier.com/product.jsp?isbn=9780124169708
+!
+
+program peakBandwidth
+  use cudafor
+  implicit none
+
+  integer :: i, istat, nDevices=0
+  type (cudaDeviceProp) :: prop
+
+  istat = cudaGetDeviceCount(nDevices)
+  do i = 0, nDevices-1
+     istat = cudaGetDeviceProperties(prop, i)
+     if (istat .eq. 0) then
+        write(*,"('  GetDeviceProperties for device ',i0,': Passed')") i
+     else
+        write(*,"('  GetDeviceProperties for device ',i0,': Failed')") i
+     endif
+     write(*,"(' Device Number: ',i0)") i
+     write(*,"('   Device name: ',a)") trim(prop%name)
+     write(*,"('   Memory Clock Rate (KHz): ', i0)") &
+          prop%memoryClockRate
+     write(*,"('   Memory Bus Width (bits): ', i0)") &
+          prop%memoryBusWidth
+     write(*,"('   Peak Memory Bandwidth (GB/s): ', f6.2)") &
+          2.0 * prop%memoryClockRate * &
+          (prop%memoryBusWidth / 8) * 1.e-6
+     write(*,*)        
+  enddo
+end program peakBandwidth

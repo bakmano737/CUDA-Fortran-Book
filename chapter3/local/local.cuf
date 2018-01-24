@@ -1,0 +1,41 @@
+! 
+!     Copyright (c) 2017, NVIDIA CORPORATION.  All rights reserved.
+!
+! NVIDIA CORPORATION and its licensors retain all intellectual property
+! and proprietary rights in and to this software, related documentation
+! and any modifications thereto.
+!
+!
+!    These example codes are a portion of the code samples from the companion
+!    website to the book "CUDA Fortran for Scientists and Engineers":
+!
+! http://store.elsevier.com/product.jsp?isbn=9780124169708
+!
+
+module localmem
+  implicit none
+contains
+  attributes(global) subroutine k1(a)
+    real :: a(*), b(2)
+    integer :: i
+    i = blockDim%x*(blockIdx%x-1) + threadIdx%x
+    b(1) = 1; b(2) = 2
+    a(i) = b(2)
+  end subroutine k1
+
+  attributes(global) subroutine k2(a,j,k)
+    real :: a(*), b(2)
+    integer :: i,j,k
+    b(j) = 1.0
+    i = blockDim%x*(blockIdx%x-1) + threadIdx%x
+    a(i) = b(k)
+  end subroutine k2
+
+  attributes(global) subroutine k3(a)
+    real :: a(*), b(256)
+    integer :: i
+    b = 1.0
+    i = blockDim%x*(blockIdx%x-1) + threadIdx%x
+    a(i) = b(2)
+  end subroutine k3
+end module localmem

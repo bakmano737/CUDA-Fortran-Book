@@ -1,0 +1,124 @@
+
+#
+#     Copyright (c) 2017, NVIDIA CORPORATION.  All rights reserved.
+#
+# NVIDIA CORPORATION and its licensors retain all intellectual property
+# and proprietary rights in and to this software, related documentation
+# and any modifications thereto.
+# 
+
+
+The examples in this chapter demonstrate two different approaches to
+multi-GPU programming.  The first approach uses the peer-to-peer
+capabilities in CUDA Fortran, and the examples for this approach are in
+the P2P subdirectory.  The peer-to-peer approach can be used on a
+single compute node containing multiple GPUs.  
+
+The second approach to multi-GPU computing uses MPI, or more
+precisely CUDA-aware MPI implementations.  These examples are located
+in the MPI subdirectory.  Relative to the peer-to-peer approach,
+multi-GPU programming via MPI is more flexible regarding the types of
+systems used as the GPUs can be contained within a single node or
+distributed across multiple nodes, or a combination of both.  
+
+For the P2P examples, the only software required is the PGI Fortran
+compiler.  For the MPI examples, in addition to the PGI Fortran
+compiler one also requires an MPI software stack.  MPI implementations
+usually provide a script/binary called mpicc and mpif90 that will
+compile MPI programs and link all the required libraries. Many
+supercomputing centers will have MPI already preinstalled on their
+clusters.
+
+This Readme file explains the steps required to install MVAPICH, a
+CUDA-aware MPI implementation.  Other MPI implementations will require
+different set-up procedures, but the essential issue to keep in mind
+is that the underlying Fortran compiler should be the PGI Fortran
+compiler. 
+
+
+************************
+* Installing MVAPICH:  *
+************************
+
+1) Download the latest MVAPICH:
+   
+The tar file is available from the MVAPICH web site:
+
+http://mvapich.cse.ohio-state.edu/download/mvapich2
+ 
+2) Install libraries for network adapter
+
+Depending on the network adapter used in your system, you may need to
+install associated development libraries.  For example, for Infiniband
+there are two packages, libibverbs and libibverbs-devel, that are
+required to install MVAPICH.  These can be downloaded by:
+
+% yum install libibverbs
+
+and
+
+% yum install libibverbs-devel
+
+
+3) Configure MVAPICH:
+
+Due to compatibility issues between CUDA and the PGI C compiler, we
+are going to use gcc for the C compiler and PGI Fortran for the
+Fortran compiler. We need to specify the location of the CUDA include
+files and libraries (in this case, we assume they are located in the
+standard location /usr/local/cuda ) and the path where the MVAPICH
+binaries, libraries, and include files will be installed (in this case
+/share/apps/mvapich2-gpu, a filesystem accessible from all the cluster
+nodes).  These can be configured by issuing the following command from
+the installation directory containing the configure file:
+
+% FC=pgfortran F77=pgfortran FCFLAGS=-fast FFLAGS=-fast ./configure  \
+  --prefix=/share/apps/mvapich2-gpu  \
+  --enable-cuda  \
+  --with-cuda-include=/usr/local/cuda/include  \
+  --with-cuda-libpath=/usr/local/cuda/lib64  \
+  --without-hwloc 
+
+There are many other configuration options that vary according to the
+network adapter and protocal used.  These are discussed at great
+length in the MVAPICH2 User's Guide.  The above options are related to
+configuring a CUDA-aware build that enables GPU-GPU communication with
+CUDA Fortran.
+
+
+4) Build and install MVAPICH:
+
+The next steps are to run "make" and then "make install".  For this
+last step, depending on the location of the installed software, you
+may need to have root privileges.
+
+
+5) Add the location of the binaries to your path
+   
+% export PATH=/share/apps/mvapich2-gpu/bin:$PATH
+
+
+6) Running CUDA-aware MPI applications with MVAPICH
+
+In order to use the CUDA-aware features of MVAPICH, one needs to set the
+environment variable MV2_USE_CUDA to 1.  This can either be done in the 
+shell:
+
+% export MV2_USE_CUDA=1
+
+or as an argument to the mpirun_rsh command:
+
+% mpirun_rsh -n 2 host1 host2 MV2_USE_CUDA=1 ./mvaApp
+
+
+
+*************************
+* mpicc with PGCC       *
+*************************
+
+If there is the need to use mpicc with the PGI C compiler to compile
+CUDA C files, the following flags are required:
+
+PGIFLAGS=-D__align__\(n\)=__attribute__\(\(aligned\(n\)\)\) -D__location__\(a\)=__annotate__\(a\)  -DCUDARTAPI=  -D__x86_64
+
+
